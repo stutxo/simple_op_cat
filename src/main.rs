@@ -11,9 +11,12 @@ use bitcoin::{
     Address, Amount, OutPoint, Sequence, Transaction, TxIn, TxOut,
 };
 
+use tracing::info;
+
 mod cat_scripts;
 mod config;
 mod rpc_helper;
+mod sigops;
 
 //the amount you want to spend in the cat transaction
 const CAT_SPEND_AMOUNT: Amount = Amount::from_sat(10000);
@@ -21,6 +24,8 @@ const CAT_SPEND_AMOUNT: Amount = Amount::from_sat(10000);
 const FEE_AMOUNT: Amount = Amount::from_sat(1000);
 
 fn main() {
+    tracing_subscriber::fmt().with_target(false).init();
+
     let config = NetworkConfig::new();
     let rpc = config.bitcoin_rpc();
 
@@ -30,7 +35,7 @@ fn main() {
         .require_network(config.network)
         .unwrap();
 
-    println!("cat target address: {}", cat_spend_to_address);
+    info!("cat target address: {}", cat_spend_to_address);
 
     let cat_tx_out = TxOut {
         value: CAT_SPEND_AMOUNT - FEE_AMOUNT,
@@ -41,14 +46,14 @@ fn main() {
     let cat_tr_spend_info = create_cat_address(cat_tx_out.clone()).unwrap();
     let cat_contract_address =
         Address::p2tr_tweaked(cat_tr_spend_info.output_key(), config.network);
-    println!("cat contract address: {}", cat_contract_address);
+    info!("cat contract address: {}", cat_contract_address);
 
     #[cfg(feature = "regtest")]
     if rpc.get_balance(None, None).unwrap() < CAT_SPEND_AMOUNT + FEE_AMOUNT {
         let _ = rpc.generate_to_address(101, &cat_spend_to_address);
     }
 
-    println!("Funding cat contract address...");
+    info!("Funding cat contract address...");
     let cat_funding_txid = send_funding_transaction(&rpc, &cat_contract_address, CAT_SPEND_AMOUNT);
 
     #[cfg(feature = "regtest")]
@@ -76,12 +81,12 @@ fn main() {
     let parent_tx = spend_cat(unsigned_tx, cat_tr_spend_info, cat_tx_out);
 
     let parent_serialized_tx = serialize_hex(&parent_tx);
-    println!("\nSpending cat transaction...");
-    println!("\nParent tx: {}", parent_serialized_tx);
+    info!("\nSpending cat transaction...");
+    info!("\nParent tx: {}", parent_serialized_tx);
 
     let parent_txid = rpc.send_raw_transaction(parent_serialized_tx).unwrap();
 
-    println!("\nParent txid: {}", parent_txid);
+    info!("\nParent txid: {}", parent_txid);
 
     #[cfg(feature = "regtest")]
     let _ = rpc.generate_to_address(1, &cat_spend_to_address);

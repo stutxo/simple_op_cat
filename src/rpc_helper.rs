@@ -1,6 +1,7 @@
 use bitcoincore_rpc::RpcApi;
 use core::time;
 use std::thread;
+use tracing::{error, info};
 
 pub fn send_funding_transaction(
     rpc: &bitcoincore_rpc::Client,
@@ -11,11 +12,11 @@ pub fn send_funding_transaction(
 
     match txid_result {
         Ok(txid) => {
-            println!("Funding transaction sent: {}", txid);
+            info!("Funding transaction sent: {}", txid);
             txid
         }
         Err(e) => {
-            eprintln!("Error sending funding transaction: {:?}", e);
+            error!("Error sending funding transaction: {:?}", e);
             std::process::exit(1);
         }
     }
@@ -30,13 +31,13 @@ pub fn get_vout_after_confirmation(
         let transaction_info = rpc.get_transaction(&funding_txid, None).unwrap();
         let confirmations = transaction_info.info.confirmations;
 
-        println!(
+        info!(
             "Current confirmations: {} for funding transaction {}",
             confirmations, funding_txid
         );
 
         if confirmations >= 1 {
-            println!("Funding Transaction is confirmed! We can now spend the CTV transaction.");
+            info!("Funding Transaction is confirmed! We can now spend the CAT transaction.");
             break;
         }
 

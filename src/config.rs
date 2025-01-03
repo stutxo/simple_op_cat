@@ -3,6 +3,7 @@ use std::env;
 use bitcoin::Network;
 
 use bitcoincore_rpc::{Auth, Client, RpcApi};
+use tracing::info;
 
 // https://bitcoinops.org/en/bitcoin-core-28-wallet-integration-guide/
 // mainnet: bc1pfeessrawgf
@@ -26,13 +27,13 @@ impl NetworkConfig {
                 network: Network::Regtest,
                 port: "18443",
                 fee_anchor_addr: "bcrt1pfeesnyr2tx",
-                wallet_name: "simple_ctv".to_string(),
+                wallet_name: "simple_cat".to_string(),
             };
         }
         #[cfg(feature = "signet")]
         {
             let wallet_name = env::var("SIGNET_WALLET").expect("SIGNET_WALLET env var not set");
-            println!("wallet name: {}", wallet_name);
+            info!("wallet name: {}", wallet_name);
             return Self {
                 network: Network::Signet,
                 port: "38332",
@@ -52,7 +53,7 @@ impl NetworkConfig {
         let bitcoin_rpc_url =
             format!("http://localhost:{}/wallet/{}", self.port, self.wallet_name,);
 
-        println!("wallet name in use: {}", self.wallet_name);
+        info!("wallet name in use: {}", self.wallet_name);
 
         let bitcoin_rpc = Client::new(
             &bitcoin_rpc_url,
@@ -64,7 +65,7 @@ impl NetworkConfig {
         let regtest_wallet = bitcoin_rpc.create_wallet(&self.wallet_name, None, None, None, None);
         #[cfg(feature = "regtest")]
         if regtest_wallet.is_ok() {
-            println!("regtest wallet created")
+            info!("regtest wallet created")
         }
 
         let _ = bitcoin_rpc.load_wallet(&self.wallet_name);

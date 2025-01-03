@@ -34,10 +34,10 @@ pub fn spend_cat(
     taproot_spend_info: TaprootSpendInfo,
     cat_txout: TxOut,
 ) -> Transaction {
-    let ctv_script = cat_script(cat_txout);
+    let cat_script = cat_script(cat_txout);
 
     for input in unsigned_tx.input.iter_mut() {
-        let script_ver = (ctv_script.clone(), LeafVersion::TapScript);
+        let script_ver = (cat_script.clone(), LeafVersion::TapScript);
         let ctrl_block = taproot_spend_info.control_block(&script_ver).unwrap();
 
         input.witness.push(script_ver.0.into_bytes());
@@ -62,7 +62,7 @@ pub fn cat_script(tx_out: TxOut) -> ScriptBuf {
         .push_opcode(OP_TOALTSTACK) // push the first copy of the vault scriptpubkey to the alt stack
         .push_opcode(OP_TOALTSTACK) // push the first copy of the vault amount to the alt stack
         .push_slice(script_pubkey) // push the payout scriptpubkey
-        .push_slice(&tx_out.value.to_sat().to_le_bytes()) // push the payout amount
+        .push_slice(tx_out.value.to_sat().to_le_bytes()) // push the payout amount
         .push_opcode(OP_TOALTSTACK) // push the second copy of the vault scriptpubkey to the alt stack
         .push_opcode(OP_TOALTSTACK) // push the second copy of the vault amount to the alt stack
         .push_opcode(OP_CAT) // encoded leaf hash

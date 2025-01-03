@@ -8,6 +8,10 @@ rand = "0.8.5"
 bitcoin = "0.32.4"
 bitcoincore-rpc = "0.19.0"
 schnorr_fun = "0.9.2"
+anyhow = "1.0.95"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+hex = "0.4.3"
 
 [features]
 default = ["regtest"]
