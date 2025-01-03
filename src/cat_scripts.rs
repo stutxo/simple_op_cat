@@ -1,4 +1,5 @@
 use bitcoin::{
+    consensus::Encodable,
     io::Error,
     key::{Keypair, Secp256k1},
     opcodes::all::{
@@ -7,9 +8,15 @@ use bitcoin::{
     },
     script::{Builder, PushBytesBuf},
     taproot::{LeafVersion, TaprootBuilder, TaprootSpendInfo},
-    ScriptBuf, Transaction, TxOut, XOnlyPublicKey,
+    ScriptBuf, TapLeafHash, TapSighashType, Transaction, TxOut, XOnlyPublicKey,
 };
 use schnorr_fun::fun::G;
+use tracing::debug;
+
+use crate::sigops::{
+    compute_signature_from_components, get_sigmsg_components, grind_transaction, GrindField,
+    TxCommitmentSpec,
+};
 
 pub fn create_cat_address(cat_txout: TxOut) -> Result<TaprootSpendInfo, Error> {
     let secp = Secp256k1::new();
@@ -30,19 +37,82 @@ pub fn create_cat_address(cat_txout: TxOut) -> Result<TaprootSpendInfo, Error> {
 }
 
 pub fn spend_cat(
-    mut unsigned_tx: Transaction,
+    unsigned_tx: Transaction,
     taproot_spend_info: TaprootSpendInfo,
     cat_txout: TxOut,
+    prev_output: TxOut,
 ) -> Transaction {
-    let cat_script = cat_script(cat_txout);
+    let mut txin = unsigned_tx.input[0].clone();
 
-    for input in unsigned_tx.input.iter_mut() {
-        let script_ver = (cat_script.clone(), LeafVersion::TapScript);
-        let ctrl_block = taproot_spend_info.control_block(&script_ver).unwrap();
+    let tx_commitment_spec = TxCommitmentSpec {
+        prev_sciptpubkeys: false,
+        prev_amounts: false,
+        outputs: false,
+        ..Default::default()
+    };
 
-        input.witness.push(script_ver.0.into_bytes());
-        input.witness.push(ctrl_block.serialize());
+    let cat_script = cat_script(cat_txout.clone());
+
+    let leaf_hash = TapLeafHash::from_script(&cat_script, LeafVersion::TapScript);
+
+    let contract_components = grind_transaction(
+        unsigned_tx.clone(),
+        GrindField::LockTime,
+        &[prev_output.clone()],
+        leaf_hash,
+    )
+    .unwrap();
+
+    let mut txn = contract_components.transaction;
+    let witness_components = get_sigmsg_components(
+        &tx_commitment_spec,
+        &txn,
+        0,
+        &[prev_output.clone()],
+        None,
+        leaf_hash,
+        TapSighashType::Default,
+    )
+    .unwrap();
+
+    for component in witness_components.iter() {
+        debug!(
+            "pushing component <0x{}> into the witness",
+            hex::encode(component)
+        );
+        txin.witness.push(component.as_slice());
     }
+    let computed_signature =
+        compute_signature_from_components(&contract_components.signature_components).unwrap();
+
+    let mut amount_buffer = Vec::new();
+    prev_output
+        .value
+        .consensus_encode(&mut amount_buffer)
+        .unwrap();
+    txin.witness.push(amount_buffer.as_slice());
+
+    let mut scriptpubkey_buffer = Vec::new();
+
+    cat_txout
+        .script_pubkey
+        .consensus_encode(&mut scriptpubkey_buffer)
+        .unwrap();
+    txin.witness.push(scriptpubkey_buffer.as_slice());
+
+    let mangled_signature: [u8; 63] = computed_signature[0..63].try_into().unwrap(); // chop off the last byte, so we can provide the 0x00 and 0x01 bytes on the stack
+    txin.witness.push(mangled_signature);
+
+    txin.witness
+        .push(cat_txout.script_pubkey.clone().to_bytes());
+
+    txin.witness.push(
+        taproot_spend_info
+            .control_block(&(cat_txout.script_pubkey.clone(), LeafVersion::TapScript))
+            .expect("control block should work")
+            .serialize(),
+    );
+    txn.input.first_mut().unwrap().witness = txin.witness.clone();
     unsigned_tx
 }
 

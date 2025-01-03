@@ -11,6 +11,7 @@ use bitcoin::{
     Address, Amount, OutPoint, Sequence, Transaction, TxIn, TxOut,
 };
 
+use sigops::TxCommitmentSpec;
 use tracing::info;
 
 mod cat_scripts;
@@ -56,29 +57,50 @@ fn main() {
     info!("Funding cat contract address...");
     let cat_funding_txid = send_funding_transaction(&rpc, &cat_contract_address, CAT_SPEND_AMOUNT);
 
+    let prev_output = rpc
+        .get_transaction(&cat_funding_txid, None)
+        .unwrap()
+        .details[0]
+        .clone();
+
+    let prev_output_txout = TxOut {
+        value: prev_output.amount.to_unsigned().unwrap(),
+        script_pubkey: prev_output
+            .address
+            .unwrap()
+            .require_network(config.network)
+            .unwrap()
+            .script_pubkey(),
+    };
+
     #[cfg(feature = "regtest")]
     let _ = rpc.generate_to_address(1, &cat_spend_to_address);
 
     //we have to wait for the funding transaction to be confirmed to pay to anchor
     let cat_vout = get_vout_after_confirmation(&rpc, cat_funding_txid, CAT_SPEND_AMOUNT);
 
-    let inputs = vec![TxIn {
+    let inputs = TxIn {
         previous_output: OutPoint {
             txid: cat_funding_txid,
             vout: cat_vout,
         },
         sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
         ..Default::default()
-    }];
+    };
 
     let unsigned_tx = Transaction {
         version: transaction::Version(2),
         lock_time: absolute::LockTime::ZERO,
-        input: inputs,
+        input: vec![inputs],
         output: vec![cat_tx_out.clone()],
     };
 
-    let parent_tx = spend_cat(unsigned_tx, cat_tr_spend_info, cat_tx_out);
+    let parent_tx = spend_cat(
+        unsigned_tx,
+        cat_tr_spend_info,
+        cat_tx_out,
+        prev_output_txout,
+    );
 
     let parent_serialized_tx = serialize_hex(&parent_tx);
     info!("\nSpending cat transaction...");
