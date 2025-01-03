@@ -355,7 +355,7 @@ where
             prevouts,
             None,
             leaf_hash.clone(),
-            TapSighashType::Default,
+            TapSighashType::None,
         )?;
         let sigmsg = compute_sigmsg_from_components(&components_for_signature)?;
         let challenge = compute_challenge(&sigmsg);
@@ -363,7 +363,7 @@ where
         if challenge[31] == 0x00 {
             debug!("Found a challenge with a 0 at the end!");
             debug!("{:?} is {}", grind_field, counter);
-            debug!("Here's the challenge: {}", hex::encode(&challenge),);
+            debug!("Here's the challenge: {}", hex::encode(challenge),);
             signature_components = components_for_signature;
             break;
         }

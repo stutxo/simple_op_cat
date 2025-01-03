@@ -11,7 +11,6 @@ use bitcoin::{
     Address, Amount, OutPoint, Sequence, Transaction, TxIn, TxOut,
 };
 
-use sigops::TxCommitmentSpec;
 use tracing::info;
 
 mod cat_scripts;
@@ -25,7 +24,10 @@ const CAT_SPEND_AMOUNT: Amount = Amount::from_sat(10000);
 const FEE_AMOUNT: Amount = Amount::from_sat(1000);
 
 fn main() {
-    tracing_subscriber::fmt().with_target(false).init();
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_target(false)
+        .init();
 
     let config = NetworkConfig::new();
     let rpc = config.bitcoin_rpc();
@@ -39,7 +41,7 @@ fn main() {
     info!("cat target address: {}", cat_spend_to_address);
 
     let cat_tx_out = TxOut {
-        value: CAT_SPEND_AMOUNT - FEE_AMOUNT,
+        value: CAT_SPEND_AMOUNT,
         script_pubkey: cat_spend_to_address.script_pubkey(),
     };
 
@@ -57,20 +59,9 @@ fn main() {
     info!("Funding cat contract address...");
     let cat_funding_txid = send_funding_transaction(&rpc, &cat_contract_address, CAT_SPEND_AMOUNT);
 
-    let prev_output = rpc
-        .get_transaction(&cat_funding_txid, None)
-        .unwrap()
-        .details[0]
-        .clone();
-
     let prev_output_txout = TxOut {
-        value: prev_output.amount.to_unsigned().unwrap(),
-        script_pubkey: prev_output
-            .address
-            .unwrap()
-            .require_network(config.network)
-            .unwrap()
-            .script_pubkey(),
+        value: CAT_SPEND_AMOUNT,
+        script_pubkey: cat_contract_address.script_pubkey(),
     };
 
     #[cfg(feature = "regtest")]
@@ -105,6 +96,12 @@ fn main() {
     let parent_serialized_tx = serialize_hex(&parent_tx);
     info!("\nSpending cat transaction...");
     info!("\nParent tx: {}", parent_serialized_tx);
+
+    let raw_tx = rpc
+        .decode_raw_transaction(parent_serialized_tx.clone(), None)
+        .unwrap();
+
+    info!("Decoded tx: {:?}", raw_tx);
 
     let parent_txid = rpc.send_raw_transaction(parent_serialized_tx).unwrap();
 
