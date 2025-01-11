@@ -1,3 +1,5 @@
+use std::default;
+
 use bitcoin::{
     amount::serde::as_btc::deserialize,
     consensus::Encodable,
@@ -9,16 +11,41 @@ use bitcoin::{
         OP_SWAP, OP_TOALTSTACK,
     },
     script::{Builder, PushBytesBuf},
+    sighash::{Prevouts, SighashCache},
     taproot::{LeafVersion, TaprootBuilder, TaprootSpendInfo},
-    ScriptBuf, TapLeafHash, TapSighashType, Transaction, TxOut, XOnlyPublicKey,
+    ScriptBuf, TapLeafHash, TapSighashType, Transaction, TxIn, TxOut, XOnlyPublicKey,
 };
 use hex::decode;
+use lazy_static::lazy_static;
 use schnorr_fun::fun::G;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
+
+lazy_static! {
+    pub(crate) static ref G_X: [u8; 32] = G.into_point_with_even_y().0.to_xonly_bytes();
+    pub(crate) static ref TAPSIGHASH_TAG: [u8; 10] = {
+        let mut tag = [0u8; 10];
+        let val = "TapSighash".as_bytes();
+        tag.copy_from_slice(val);
+        tag
+    };
+    pub(crate) static ref BIP0340_CHALLENGE_TAG: [u8; 17] = {
+        let mut tag = [0u8; 17];
+        let val = "BIP0340/challenge".as_bytes();
+        tag.copy_from_slice(val);
+        tag
+    };
+    pub(crate) static ref DUST_AMOUNT: [u8; 8] = {
+        let mut dust = [0u8; 8];
+        let mut buffer = Vec::new();
+        let amount: u64 = 546;
+        amount.consensus_encode(&mut buffer).unwrap();
+        dust.copy_from_slice(&buffer);
+        dust
+    };
+}
 
 use crate::sigops::{
     compute_signature_from_components, get_sigmsg_components, grind_transaction, GrindField,
-    TxCommitmentSpec,
 };
 
 pub fn create_cat_address(cat_txout: TxOut) -> Result<TaprootSpendInfo, Error> {
@@ -47,13 +74,6 @@ pub fn spend_cat(
 ) -> Transaction {
     let mut txin = unsigned_tx.input[0].clone();
 
-    let tx_commitment_spec = TxCommitmentSpec {
-        prev_sciptpubkeys: false,
-        prev_amounts: false,
-        outputs: false,
-        ..Default::default()
-    };
-
     let cat_script = cat_script(cat_txout.clone());
 
     let leaf_hash = TapLeafHash::from_script(&cat_script, LeafVersion::TapScript);
@@ -67,8 +87,8 @@ pub fn spend_cat(
     .unwrap();
 
     let mut txn = contract_components.transaction;
+
     let witness_components = get_sigmsg_components(
-        &tx_commitment_spec,
         &txn,
         0,
         &[prev_output.clone()],
@@ -78,10 +98,8 @@ pub fn spend_cat(
     )
     .unwrap();
 
-    info!("witness components: {:?}", witness_components);
-
     for component in witness_components.iter() {
-        debug!(
+        info!(
             "pushing component <0x{}> into the witness",
             hex::encode(component)
         );
@@ -91,28 +109,13 @@ pub fn spend_cat(
     let computed_signature =
         compute_signature_from_components(&contract_components.signature_components).unwrap();
 
-    let mut amount_buffer = Vec::new();
-    prev_output
-        .value
-        .consensus_encode(&mut amount_buffer)
-        .unwrap();
-    txin.witness.push(amount_buffer.as_slice());
-
-    let mut scriptpubkey_buffer = Vec::new();
-
-    cat_txout
-        .script_pubkey
-        .consensus_encode(&mut scriptpubkey_buffer)
-        .unwrap();
-    txin.witness.push(scriptpubkey_buffer.as_slice());
-
     let mangled_signature: [u8; 63] = computed_signature[0..63].try_into().unwrap(); // chop off the last byte, so we can provide the 0x00 and 0x01 bytes on the stack
     txin.witness.push(mangled_signature);
 
     txin.witness.push([computed_signature[63]]); // push the last byte of the signature
     txin.witness.push([computed_signature[63] + 1]);
 
-    txin.witness.push(cat_script.clone());
+    txin.witness.push(cat_script.clone().to_bytes());
 
     txin.witness.push(
         taproot_spend_info
@@ -133,90 +136,50 @@ pub fn cat_script(tx_out: TxOut) -> ScriptBuf {
         .into_bytes()
         .try_into()
         .unwrap();
-    let g_x = G.into_point_with_even_y().0.to_xonly_bytes();
-    let tap_sighash_tag: [u8; 10] = *b"TapSighash";
-    let bip304_tag: [u8; 17] = *b"BIP0340/challenge";
+
+    error!("script_pubkey: {:?}", script_pubkey);
+    error!("value: {:?}", tx_out.value.to_sat().to_le_bytes());
+
+    let input_amount = tx_out.value.to_sat().to_le_bytes();
+    let input_scriptpubkey = script_pubkey;
 
     Builder::new()
-        .push_opcode(OP_TOALTSTACK) // move pre-computed signature minus last byte to alt stack
-        .push_opcode(OP_TOALTSTACK) // move last byte to alt stack
-        .push_opcode(OP_TOALTSTACK) // move last byte to alt stack
-        .push_opcode(OP_2DUP) // make a second copy of the vault scriptpubkey and amount so we can check input = output
-        .push_opcode(OP_TOALTSTACK) // push the first copy of the vault scriptpubkey to the alt stack
-        .push_opcode(OP_TOALTSTACK) // push the first copy of the vault amount to the alt stack
-        .push_opcode(OP_TOALTSTACK) // push the second copy of the vault scriptpubkey to the alt stack
-        .push_opcode(OP_TOALTSTACK) // push the second copy of the vault amount to the alt stack
-        // start with encoded leaf hash
-        .push_opcode(OP_CAT) // encoded leaf hash
-        .push_opcode(OP_CAT) // encoded leaf hash
-        .push_slice([0x00u8, 0x00u8, 0x00u8, 0x00u8]) // add input index of 0
-        .push_opcode(OP_SWAP) // bring working sigmsg back to top of stack
-        .push_opcode(OP_CAT) // input index
-        .push_opcode(OP_CAT) // spend type
-        .push_opcode(OP_FROMALTSTACK) // get the output amount
-        .push_opcode(OP_FROMALTSTACK) // get the second copy of the scriptpubkey
-        .push_opcode(OP_CAT) // cat the output amount and the second copy of the scriptpubkey
-        .push_opcode(OP_SHA256) // hash the output
-        .push_opcode(OP_SWAP) // move the hashed encoded outputs below our working sigmsg
-        .push_opcode(OP_CAT) // outputs
-        .push_opcode(OP_CAT) // prev sequences
-        .push_opcode(OP_FROMALTSTACK) // get the other copy of the vault amount
-        .push_opcode(OP_FROMALTSTACK) // get the other copy of the vault scriptpubkey
-        .push_opcode(OP_FROMALTSTACK) // get the fee amount
-        .push_opcode(OP_FROMALTSTACK) // get the fee-paying scriptpubkey
-        .push_opcode(OP_SWAP) // move the fee-paying scriptpubkey below the fee amount
-        .push_opcode(OP_TOALTSTACK) // move fee amount to alt stack
-        .push_opcode(OP_CAT) // cat the vault scriptpubkey fee-paying scriptpubkey
-        .push_opcode(OP_SWAP) // move the vault amount to the top of the stack
-        .push_opcode(OP_TOALTSTACK) // move the vault amount to the alt stack
-        .push_opcode(OP_SHA256) // hash the scriptpubkeys, should now be consensus encoding
-        .push_opcode(OP_SWAP) // move the hashed encoded scriptpubkeys below our working sigmsg
-        .push_opcode(OP_CAT) // prev scriptpubkeys
-        .push_opcode(OP_FROMALTSTACK) // get the vault amount
-        .push_opcode(OP_FROMALTSTACK) // get the fee amount
-        .push_opcode(OP_CAT) // cat the vault amount and the fee amount
-        .push_opcode(OP_SHA256) // hash the amounts
-        .push_opcode(OP_SWAP) // move the hashed encoded amounts below our working sigmsg
-        .push_opcode(OP_CAT) // prev amounts
-        .push_opcode(OP_CAT) // prevouts
-        .push_opcode(OP_CAT) // lock time
-        .push_opcode(OP_CAT) // version
-        .push_opcode(OP_CAT) // control
-        .push_opcode(OP_CAT) // epoc
+        .push_slice(input_amount)
+        .push_slice(input_scriptpubkey)
         //sighash stuff
-        // .push_slice(tap_sighash_tag) // push tag
-        // .push_opcode(OP_SHA256) // hash tag
-        // .push_opcode(OP_DUP) // dup hash
-        // .push_opcode(OP_ROT) // move the sighash to the top of the stack
-        // .push_opcode(OP_CAT)
-        // .push_opcode(OP_CAT)
-        // .push_opcode(OP_SHA256) // tagged hash of the sighash
-        // .push_slice(bip304_tag) // push tag
-        // .push_opcode(OP_SHA256)
-        // .push_opcode(OP_DUP)
-        // .push_opcode(OP_ROT) // bring challenge to the top of the stack
-        // .push_slice(g_x) // G is used for the pubkey and K
-        // .push_opcode(OP_DUP)
-        // .push_opcode(OP_DUP)
-        // .push_opcode(OP_TOALTSTACK) // we'll need a copy of G later to be our R value in the signature
-        // .push_opcode(OP_ROT) // bring the challenge to the top of the stack
-        // .push_opcode(OP_CAT)
-        // .push_opcode(OP_CAT)
-        // .push_opcode(OP_CAT)
-        // .push_opcode(OP_CAT) // cat the two tags, R, P, and M values together
-        // .push_opcode(OP_SHA256) // hash the whole thing to get the s value for the signature
-        // .push_opcode(OP_FROMALTSTACK) // bring G back from the alt stack to use as the R value in the signature
-        // .push_opcode(OP_SWAP)
-        // .push_opcode(OP_CAT) // cat the R value with the s value for a complete signature
-        // .push_opcode(OP_FROMALTSTACK) // grab the pre-computed signature minus the last byte from the alt stack
-        // .push_opcode(OP_DUP) // we'll need a second copy later to do the actual signature verification
-        // .push_slice([0x00u8]) // add the last byte of the signature, which should match what we computed. NOTE ⚠️: push_int(0) will not work here because it will push OP_FALSE, but we want an actual 0 byte
-        // .push_opcode(OP_CAT)
-        // .push_opcode(OP_ROT) // bring the script-computed signature to the top of the stack
-        // .push_opcode(OP_EQUALVERIFY) // check that the script-computed and pre-computed signatures match
-        // .push_int(0x01) // we need the last byte of the signature to be 0x01 because our k value is 1 (because K is G)
-        // .push_opcode(OP_CAT)
-        // .push_slice(g_x) // push G again. TODO: DUP this from before and stick it in the alt stack or something
-        // .push_opcode(OP_CHECKSIG)
+        .push_slice(*TAPSIGHASH_TAG) // push tag
+        .push_opcode(OP_SHA256) // hash tag
+        .push_opcode(OP_DUP) // dup hash
+        .push_opcode(OP_ROT) // move the sighash to the top of the stack
+        .push_opcode(OP_CAT)
+        .push_opcode(OP_CAT)
+        .push_opcode(OP_SHA256) // tagged hash of the sighash
+        .push_slice(*BIP0340_CHALLENGE_TAG) // push tag
+        .push_opcode(OP_SHA256)
+        .push_opcode(OP_DUP)
+        .push_opcode(OP_ROT) // bring challenge to the top of the stack
+        .push_slice(*G_X) // G is used for the pubkey and K
+        .push_opcode(OP_DUP)
+        .push_opcode(OP_DUP)
+        .push_opcode(OP_TOALTSTACK) // we'll need a copy of G later to be our R value in the signature
+        .push_opcode(OP_ROT) // bring the challenge to the top of the stack
+        .push_opcode(OP_CAT)
+        .push_opcode(OP_CAT)
+        .push_opcode(OP_CAT)
+        .push_opcode(OP_CAT) // cat the two tags, R, P, and M values together
+        .push_opcode(OP_SHA256) // hash the whole thing to get the s value for the signature
+        .push_opcode(OP_FROMALTSTACK) // bring G back from the alt stack to use as the R value in the signature
+        .push_opcode(OP_SWAP)
+        .push_opcode(OP_CAT) // cat the R value with the s value for a complete signature
+        .push_opcode(OP_FROMALTSTACK) // grab the pre-computed signature minus the last byte from the alt stack
+        .push_opcode(OP_DUP) // we'll need a second copy later to do the actual signature verification
+        .push_slice([0x00u8]) // add the last byte of the signature, which should match what we computed. NOTE ⚠️: push_int(0) will not work here because it will push OP_FALSE, but we want an actual 0 byte
+        .push_opcode(OP_CAT)
+        .push_opcode(OP_ROT) // bring the script-computed signature to the top of the stack
+        .push_opcode(OP_EQUALVERIFY) // check that the script-computed and pre-computed signatures match
+        .push_int(0x01) // we need the last byte of the signature to be 0x01 because our k value is 1 (because K is G)
+        .push_opcode(OP_CAT)
+        .push_slice(*G_X) // push G again. TODO: DUP this from before and stick it in the alt stack or something
+        .push_opcode(OP_CHECKSIG)
         .into_script()
 }

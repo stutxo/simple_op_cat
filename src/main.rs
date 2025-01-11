@@ -95,17 +95,8 @@ fn main() {
 
     let parent_serialized_tx = serialize_hex(&parent_tx);
     info!("\nSpending cat transaction...");
-    info!("\nParent tx: {}", parent_serialized_tx);
 
-    let raw_tx = rpc
-        .decode_raw_transaction(parent_serialized_tx.clone(), None)
-        .unwrap();
-
-    info!("Decoded tx: {:?}", raw_tx);
-
-    let parent_txid = rpc.send_raw_transaction(parent_serialized_tx).unwrap();
-
-    info!("\nParent txid: {}", parent_txid);
+    rpc.send_raw_transaction(parent_serialized_tx).unwrap();
 
     #[cfg(feature = "regtest")]
     let _ = rpc.generate_to_address(1, &cat_spend_to_address);

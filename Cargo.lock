@@ -476,6 +476,7 @@ dependencies = [
  "bitcoin",
  "bitcoincore-rpc",
  "hex",
+ "lazy_static",
  "rand",
  "schnorr_fun",
  "tracing",
