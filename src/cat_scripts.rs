@@ -1,24 +1,19 @@
-use std::default;
-
 use bitcoin::{
-    amount::serde::as_btc::deserialize,
     consensus::Encodable,
-    hashes::serde::Serialize,
     io::Error,
     key::{Keypair, Secp256k1},
     opcodes::all::{
-        OP_2DUP, OP_CAT, OP_CHECKSIG, OP_DUP, OP_EQUALVERIFY, OP_FROMALTSTACK, OP_ROT, OP_SHA256,
-        OP_SWAP, OP_TOALTSTACK,
+        OP_CAT, OP_CHECKSIG, OP_DUP, OP_EQUALVERIFY, OP_FROMALTSTACK, OP_ROT, OP_SHA256, OP_SWAP,
+        OP_TOALTSTACK,
     },
     script::{Builder, PushBytesBuf},
-    sighash::{Prevouts, SighashCache},
     taproot::{LeafVersion, TaprootBuilder, TaprootSpendInfo},
-    ScriptBuf, TapLeafHash, TapSighashType, Transaction, TxIn, TxOut, XOnlyPublicKey,
+    ScriptBuf, TapLeafHash, TapSighashType, Transaction, TxOut, XOnlyPublicKey,
 };
-use hex::decode;
+
 use lazy_static::lazy_static;
 use schnorr_fun::fun::G;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 lazy_static! {
     pub(crate) static ref G_X: [u8; 32] = G.into_point_with_even_y().0.to_xonly_bytes();
@@ -144,8 +139,26 @@ pub fn cat_script(tx_out: TxOut) -> ScriptBuf {
     let input_scriptpubkey = script_pubkey;
 
     Builder::new()
+        .push_opcode(OP_TOALTSTACK) // move pre-computed signature minus last byte to alt stack
+        .push_opcode(OP_TOALTSTACK) // move last byte to alt stack
+        .push_opcode(OP_TOALTSTACK) // move last byte to alt stack
+        // start with encoded leaf hash
+        .push_opcode(OP_CAT) // encoded leaf hash
+        .push_opcode(OP_CAT) // encoded leaf hash
+        .push_opcode(OP_CAT) // input index
+        .push_opcode(OP_CAT) // spend type
         .push_slice(input_amount)
         .push_slice(input_scriptpubkey)
+        .push_opcode(OP_CAT) // cat the output amount and the output scriptpubkey
+        // cat the outputs???
+        .push_opcode(OP_CAT) // prev sequences
+        .push_opcode(OP_CAT) // prev scriptpubkeys
+        .push_opcode(OP_CAT) // prev amounts
+        .push_opcode(OP_CAT) // prevouts
+        .push_opcode(OP_CAT) // lock time
+        .push_opcode(OP_CAT) // version
+        .push_opcode(OP_CAT) // control (sighash type)
+        .push_opcode(OP_CAT) // epoch
         //sighash stuff
         .push_slice(*TAPSIGHASH_TAG) // push tag
         .push_opcode(OP_SHA256) // hash tag

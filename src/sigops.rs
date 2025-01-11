@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use bitcoin::absolute::LockTime;
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
@@ -6,8 +5,8 @@ use bitcoin::hex::{Case, DisplayHex};
 use bitcoin::sighash::{Annex, TapSighash, TapSighashType};
 use bitcoin::taproot::TapLeafHash;
 use bitcoin::{Sequence, Transaction, TxOut};
-use schnorr_fun::fun::G;
-use tracing::{debug, info};
+
+use tracing::debug;
 
 use crate::cat_scripts::G_X;
 
