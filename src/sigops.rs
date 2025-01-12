@@ -116,6 +116,16 @@ pub(crate) fn get_sigmsg_components<S: Into<TapLeafHash>>(
 
     //* sha_outputs (32): the SHA256 of the serialization of all outputs in CTxOut format.
 
+    let mut outputs = Vec::new();
+    let mut buffer = Vec::new();
+    for o in tx.output.iter() {
+        o.consensus_encode(&mut buffer).unwrap();
+    }
+    let hash = sha256::Hash::hash(&buffer);
+    hash.consensus_encode(&mut outputs).unwrap();
+    debug!("outputs: {:?}", outputs.to_hex_string(Case::Lower));
+    components.push(outputs);
+
     // spend_type (1): equal to (ext_flag * 2) + annex_present, where annex_present is 0 if no annex is present,
     // or 1 otherwise (the original witness stack has two or more witness elements,
     // and the first byte of the last element is 0x50)
