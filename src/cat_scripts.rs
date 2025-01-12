@@ -83,15 +83,8 @@ pub fn spend_cat(
 
     let mut txn = contract_components.transaction;
 
-    let witness_components = get_sigmsg_components(
-        &txn,
-        0,
-        &[prev_output.clone()],
-        None,
-        leaf_hash,
-        TapSighashType::Default,
-    )
-    .unwrap();
+    let witness_components =
+        get_sigmsg_components(&txn, 0, &[prev_output.clone()], None, leaf_hash).unwrap();
 
     for component in witness_components.iter() {
         info!(
@@ -150,7 +143,9 @@ pub fn cat_script(tx_out: TxOut) -> ScriptBuf {
         .push_slice(input_amount)
         .push_slice(input_scriptpubkey)
         .push_opcode(OP_CAT) // cat the output amount and the output scriptpubkey
-        // cat the outputs???
+        // .push_opcode(OP_SHA256) // hash the output amount and the output scriptpubkey
+        // .push_opcode(OP_SWAP)
+        .push_opcode(OP_CAT) // outputs ????
         .push_opcode(OP_CAT) // prev sequences
         .push_opcode(OP_CAT) // prev scriptpubkeys
         .push_opcode(OP_CAT) // prev amounts

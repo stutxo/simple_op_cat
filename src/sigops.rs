@@ -16,33 +16,38 @@ pub(crate) enum GrindField {
     Sequence,
 }
 
+//https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki creating sigmsg for sighash type default (all)
 pub(crate) fn get_sigmsg_components<S: Into<TapLeafHash>>(
     tx: &Transaction,
     input_index: usize,
     prevouts: &[TxOut],
     annex: Option<Annex>,
     leaf_hash: S,
-    sighash_type: TapSighashType,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
+    let sigh_hash_type = TapSighashType::Default;
     let mut components = Vec::new();
 
     let leaf_hash_code_separator = Some((leaf_hash.into(), 0xFFFFFFFFu32));
 
+    //epoch (1): the epoch number of the transaction.
     let mut epoch = Vec::new();
     0u8.consensus_encode(&mut epoch)?;
     debug!("epoch: {:?}", hex::encode(&epoch));
     components.push(epoch);
 
+    //hash_type (1)
     let mut control = Vec::new();
-    (sighash_type as u8).consensus_encode(&mut control)?;
-    debug!("sighash type: {:?}", hex::encode(&control));
+    (sigh_hash_type as u8).consensus_encode(&mut control)?;
+    debug!("control: {:?}", hex::encode(&control));
     components.push(control);
 
+    //nVersion (4): the nVersion of the transaction.
     let mut version = Vec::new();
     tx.version.consensus_encode(&mut version)?;
     debug!("version: {:?}", hex::encode(&version));
     components.push(version);
 
+    //nLockTime (4): the nLockTime of the transaction.
     let mut lock_time = Vec::new();
     tx.lock_time.consensus_encode(&mut lock_time)?;
     debug!("lock_time: {:?}", hex::encode(&lock_time));
@@ -57,11 +62,13 @@ pub(crate) fn get_sigmsg_components<S: Into<TapLeafHash>>(
             .unwrap();
     }
 
+    //sha_prevouts (32): the SHA256 of the serialization of all input outpoints.
     let hash = sha256::Hash::hash(&buffer);
     hash.consensus_encode(&mut previousouts).unwrap();
     debug!("prevouts: {:?}", previousouts.to_hex_string(Case::Lower));
     components.push(previousouts);
 
+    //sha_amounts (32): the SHA256 of the serialization of all input amounts.
     let mut prev_amounts = Vec::new();
     let mut buffer = Vec::new();
     for p in prevouts {
@@ -76,6 +83,7 @@ pub(crate) fn get_sigmsg_components<S: Into<TapLeafHash>>(
     );
     components.push(prev_amounts);
 
+    //sha_scriptpubkeys (32): the SHA256 of all spent outputs' scriptPubKeys, serialized as script inside CTxOut.
     let mut prev_sciptpubkeys = Vec::new();
     let mut buffer = Vec::new();
     for p in prevouts {
@@ -86,6 +94,7 @@ pub(crate) fn get_sigmsg_components<S: Into<TapLeafHash>>(
         buffer.to_hex_string(Case::Lower)
     );
 
+    //sha_sequences (32): the SHA256 of the serialization of all input nSequence.
     let hash = sha256::Hash::hash(&buffer);
     hash.consensus_encode(&mut prev_sciptpubkeys).unwrap();
     debug!(
@@ -105,6 +114,11 @@ pub(crate) fn get_sigmsg_components<S: Into<TapLeafHash>>(
     debug!("sequences: {:?}", sequences.to_hex_string(Case::Lower));
     components.push(sequences);
 
+    //* sha_outputs (32): the SHA256 of the serialization of all outputs in CTxOut format.
+
+    // spend_type (1): equal to (ext_flag * 2) + annex_present, where annex_present is 0 if no annex is present,
+    // or 1 otherwise (the original witness stack has two or more witness elements,
+    // and the first byte of the last element is 0x50)
     let mut encoded_spend_type = Vec::new();
     let mut spend_type = 0u8;
     if annex.is_some() {
@@ -117,10 +131,15 @@ pub(crate) fn get_sigmsg_components<S: Into<TapLeafHash>>(
     debug!("spend_type: {:?}", hex::encode(&encoded_spend_type));
     components.push(encoded_spend_type);
 
+    //input_index (4): index of this input in the transaction input vector. Index of the first input is 0.
     let mut input_idx = Vec::new();
     (input_index as u32).consensus_encode(&mut input_idx)?;
     debug!("input index: {:?}", input_idx.to_hex_string(Case::Lower));
     components.push(input_idx);
+
+    //Leaf Hash	(32) The leaf hash for the chosen script you're using from the script tree.
+    //Public Key Version (1) The type of public key used in the leaf script. Used to indicate different types of public keys in future upgrades. default = 0x00
+    //Codeseparator Position (4) The opcode position of the last OP_CODESEPARATOR in the leaf script (if there is one). none = 0xffffffff
 
     #[allow(non_snake_case)]
     let KEY_VERSION_0 = 0u8;
@@ -238,14 +257,8 @@ where
         }
         debug!("grinding counter {}", counter);
 
-        let components_for_signature = get_sigmsg_components(
-            &spend_tx,
-            0,
-            prevouts,
-            None,
-            leaf_hash.clone(),
-            TapSighashType::Default,
-        )?;
+        let components_for_signature =
+            get_sigmsg_components(&spend_tx, 0, prevouts, None, leaf_hash.clone())?;
         let sigmsg = compute_sigmsg_from_components(&components_for_signature)?;
         let challenge = compute_challenge(&sigmsg);
 
