@@ -1,4 +1,5 @@
 use bitcoin::{
+    amount,
     consensus::Encodable,
     hashes::{sha256, Hash},
     hex::{Case, DisplayHex},
@@ -76,7 +77,7 @@ pub fn spend_cat(
     let mut txn = contract_components.transaction;
 
     let witness_components =
-        get_sigmsg_components(&txn, 0, &[prev_output.clone()], None, leaf_hash, true).unwrap();
+        get_sigmsg_components(&txn, 0, &[prev_output.clone()], None, leaf_hash, false).unwrap();
 
     for component in witness_components.iter() {
         info!(
@@ -126,7 +127,8 @@ pub fn cat_script(tx_outs: Vec<TxOut>) -> ScriptBuf {
         .push_opcode(OP_CAT) // encoded leaf hash
         .push_opcode(OP_CAT) // input index
         .push_opcode(OP_CAT) // spend type
-        // .push_slice(outputs_hash.as_byte_array()) // outputs hash
+        .push_slice(outputs_hash.as_byte_array()) // hardcoded outputs hash
+        .push_opcode(OP_SWAP)
         .push_opcode(OP_CAT) // outputs hash
         .push_opcode(OP_CAT) // prev sequences
         .push_opcode(OP_CAT) // prev scriptpubkeys
