@@ -1,19 +1,21 @@
 use bitcoin::{
     consensus::Encodable,
+    hashes::{sha256, Hash},
+    hex::{Case, DisplayHex},
     io::Error,
     key::{Keypair, Secp256k1},
     opcodes::all::{
         OP_CAT, OP_CHECKSIG, OP_DUP, OP_EQUALVERIFY, OP_FROMALTSTACK, OP_ROT, OP_SHA256, OP_SWAP,
         OP_TOALTSTACK,
     },
-    script::{Builder, PushBytesBuf},
+    script::Builder,
     taproot::{LeafVersion, TaprootBuilder, TaprootSpendInfo},
-    ScriptBuf, TapLeafHash, TapSighashType, Transaction, TxOut, XOnlyPublicKey,
+    ScriptBuf, TapLeafHash, Transaction, TxOut, XOnlyPublicKey,
 };
 
 use lazy_static::lazy_static;
 use schnorr_fun::fun::G;
-use tracing::{error, info};
+use tracing::info;
 
 lazy_static! {
     pub(crate) static ref G_X: [u8; 32] = G.into_point_with_even_y().0.to_xonly_bytes();
@@ -29,29 +31,20 @@ lazy_static! {
         tag.copy_from_slice(val);
         tag
     };
-    pub(crate) static ref DUST_AMOUNT: [u8; 8] = {
-        let mut dust = [0u8; 8];
-        let mut buffer = Vec::new();
-        let amount: u64 = 546;
-        amount.consensus_encode(&mut buffer).unwrap();
-        dust.copy_from_slice(&buffer);
-        dust
-    };
 }
 
 use crate::sigops::{
     compute_signature_from_components, get_sigmsg_components, grind_transaction, GrindField,
 };
 
-pub fn create_cat_address(cat_txout: TxOut) -> Result<TaprootSpendInfo, Error> {
+pub fn create_cat_address(tx_outs: Vec<TxOut>) -> Result<TaprootSpendInfo, Error> {
     let secp = Secp256k1::new();
 
     let key_pair = Keypair::new(&secp, &mut rand::thread_rng());
     // Random unspendable XOnlyPublicKey provided for internal key
     let (unspendable_pubkey, _parity) = XOnlyPublicKey::from_keypair(&key_pair);
 
-    let cat_script = cat_script(cat_txout);
-
+    let cat_script = cat_script(tx_outs);
     let taproot_spend_info = TaprootBuilder::new()
         .add_leaf(0, cat_script)
         .unwrap()
@@ -64,12 +57,11 @@ pub fn create_cat_address(cat_txout: TxOut) -> Result<TaprootSpendInfo, Error> {
 pub fn spend_cat(
     unsigned_tx: Transaction,
     taproot_spend_info: TaprootSpendInfo,
-    cat_txout: TxOut,
     prev_output: TxOut,
 ) -> Transaction {
     let mut txin = unsigned_tx.input[0].clone();
 
-    let cat_script = cat_script(cat_txout.clone());
+    let cat_script = cat_script(unsigned_tx.output.clone());
 
     let leaf_hash = TapLeafHash::from_script(&cat_script, LeafVersion::TapScript);
 
@@ -84,13 +76,14 @@ pub fn spend_cat(
     let mut txn = contract_components.transaction;
 
     let witness_components =
-        get_sigmsg_components(&txn, 0, &[prev_output.clone()], None, leaf_hash).unwrap();
+        get_sigmsg_components(&txn, 0, &[prev_output.clone()], None, leaf_hash, true).unwrap();
 
     for component in witness_components.iter() {
         info!(
             "pushing component <0x{}> into the witness",
             hex::encode(component)
         );
+
         txin.witness.push(component.as_slice());
     }
 
@@ -117,19 +110,12 @@ pub fn spend_cat(
     txn
 }
 
-pub fn cat_script(tx_out: TxOut) -> ScriptBuf {
-    let script_pubkey: PushBytesBuf = tx_out
-        .script_pubkey
-        .clone()
-        .into_bytes()
-        .try_into()
-        .unwrap();
-
-    error!("script_pubkey: {:?}", script_pubkey);
-    error!("value: {:?}", tx_out.value.to_sat().to_le_bytes());
-
-    let input_amount = tx_out.value.to_sat().to_le_bytes();
-    let input_scriptpubkey = script_pubkey;
+pub fn cat_script(tx_outs: Vec<TxOut>) -> ScriptBuf {
+    let outputs_hash = compute_bip341_hash_outputs(&tx_outs);
+    info!(
+        "outputs hash: {:?}",
+        outputs_hash.as_byte_array().to_hex_string(Case::Lower)
+    );
 
     Builder::new()
         .push_opcode(OP_TOALTSTACK) // move pre-computed signature minus last byte to alt stack
@@ -140,12 +126,8 @@ pub fn cat_script(tx_out: TxOut) -> ScriptBuf {
         .push_opcode(OP_CAT) // encoded leaf hash
         .push_opcode(OP_CAT) // input index
         .push_opcode(OP_CAT) // spend type
-        .push_slice(input_amount)
-        .push_slice(input_scriptpubkey)
-        .push_opcode(OP_CAT) // cat the output amount and the output scriptpubkey
-        // .push_opcode(OP_SHA256) // hash the output amount and the output scriptpubkey
-        // .push_opcode(OP_SWAP)
-        .push_opcode(OP_CAT) // outputs ????
+        // .push_slice(outputs_hash.as_byte_array()) // outputs hash
+        .push_opcode(OP_CAT) // outputs hash
         .push_opcode(OP_CAT) // prev sequences
         .push_opcode(OP_CAT) // prev scriptpubkeys
         .push_opcode(OP_CAT) // prev amounts
@@ -190,4 +172,17 @@ pub fn cat_script(tx_out: TxOut) -> ScriptBuf {
         .push_slice(*G_X) // push G again. TODO: DUP this from before and stick it in the alt stack or something
         .push_opcode(OP_CHECKSIG)
         .into_script()
+}
+
+pub fn compute_bip341_hash_outputs(txouts: &[TxOut]) -> sha256::Hash {
+    let mut engine = sha256::HashEngine::default();
+
+    for txout in txouts {
+        // Encode the TxOut in BIP-0341 style (value + scriptPubKey)
+        txout
+            .consensus_encode(&mut engine)
+            .expect("Writing to HashEngine should never fail");
+    }
+
+    sha256::Hash::from_engine(engine)
 }

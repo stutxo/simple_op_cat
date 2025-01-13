@@ -6,7 +6,7 @@ use bitcoin::sighash::{Annex, TapSighash, TapSighashType};
 use bitcoin::taproot::TapLeafHash;
 use bitcoin::{Sequence, Transaction, TxOut};
 
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::cat_scripts::G_X;
 
@@ -23,6 +23,7 @@ pub(crate) fn get_sigmsg_components<S: Into<TapLeafHash>>(
     prevouts: &[TxOut],
     annex: Option<Annex>,
     leaf_hash: S,
+    outputs: bool,
 ) -> anyhow::Result<Vec<Vec<u8>>> {
     let sigh_hash_type = TapSighashType::Default;
     let mut components = Vec::new();
@@ -114,17 +115,19 @@ pub(crate) fn get_sigmsg_components<S: Into<TapLeafHash>>(
     debug!("sequences: {:?}", sequences.to_hex_string(Case::Lower));
     components.push(sequences);
 
-    //* sha_outputs (32): the SHA256 of the serialization of all outputs in CTxOut format.
+    //sha_outputs (32): the SHA256 of the serialization of all outputs in CTxOut format.
 
-    let mut outputs = Vec::new();
-    let mut buffer = Vec::new();
-    for o in tx.output.iter() {
-        o.consensus_encode(&mut buffer).unwrap();
+    if outputs {
+        let mut outputs = Vec::new();
+        let mut buffer = Vec::new();
+        for o in tx.output.iter() {
+            o.consensus_encode(&mut buffer).unwrap();
+        }
+        let hash = sha256::Hash::hash(&buffer);
+        hash.consensus_encode(&mut outputs).unwrap();
+        info!("outputs: {:?}", outputs.to_hex_string(Case::Lower));
+        components.push(outputs);
     }
-    let hash = sha256::Hash::hash(&buffer);
-    hash.consensus_encode(&mut outputs).unwrap();
-    debug!("outputs: {:?}", outputs.to_hex_string(Case::Lower));
-    components.push(outputs);
 
     // spend_type (1): equal to (ext_flag * 2) + annex_present, where annex_present is 0 if no annex is present,
     // or 1 otherwise (the original witness stack has two or more witness elements,
@@ -268,7 +271,7 @@ where
         debug!("grinding counter {}", counter);
 
         let components_for_signature =
-            get_sigmsg_components(&spend_tx, 0, prevouts, None, leaf_hash.clone())?;
+            get_sigmsg_components(&spend_tx, 0, prevouts, None, leaf_hash.clone(), true)?;
         let sigmsg = compute_sigmsg_from_components(&components_for_signature)?;
         let challenge = compute_challenge(&sigmsg);
 
